@@ -1,0 +1,31 @@
+REPORTE DE DATOS FUSIONADOS F1
+==================================================
+
+Total filas: 5441
+Total columnas: 24
+
+Columnas disponibles:
+  - Season
+  - RaceNumber
+  - RaceName
+  - Pos
+  - No
+  - Driver
+  - Constructor
+  - Laps
+  - Time/Retired
+  - Grid
+  - Points
+  - DriverId
+  - DriverNumber
+  - NPitstops
+  - MedianPitStopDuration
+  - Pos.
+  - No.
+  - Grid[43]
+  - Unnamed: 8
+  - Pts.
+  - Laps1
+  - Start
+  - Points1
+  - Lapsa
