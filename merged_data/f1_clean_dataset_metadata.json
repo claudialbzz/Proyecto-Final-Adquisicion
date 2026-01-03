@@ -1,0 +1,24 @@
+{
+  "dataset": "Formula 1 Clean Dataset 2012-2024",
+  "description": "Dataset fusionado limpio sin columnas duplicadas",
+  "total_rows": 5441,
+  "total_columns": 14,
+  "columns": [
+    "Season",
+    "RaceNumber",
+    "RaceName",
+    "Position",
+    "Pos",
+    "DriverNumber",
+    "Driver",
+    "Constructor",
+    "Laps",
+    "Time/Retired",
+    "Grid",
+    "Points",
+    "No",
+    "Start"
+  ],
+  "season_range": "2012-2024",
+  "generated_date": "2026-01-03T14:47:58.785792"
+}

@@ -1,17 +1,26 @@
+"""
+Parte 3: Cruzado de los datos de ambas fuentes
+=============================================
+Requisitos según el enunciado:
+1. Un único DataFrame donde cada fila = resultado de un piloto en una carrera
+2. Todas las columnas de resultados (Parte 1) + todas las columnas de pitstops (Parte 2)
+3. Columnas adicionales: "Season" y "RaceNumber"
+4. Exportar a CSV
+"""
+
 import os
 import pandas as pd
 import glob
 from pathlib import Path
-import re
+import json
 
-def create_season_race_order(season):
+def get_season_calendar(season):
     """
-    Devuelve el orden de carreras para una temporada específica.
-    Esto es necesario para mapear nombres de carrera a números de round.
-    Basado en el calendario real de F1.
+    Devuelve el calendario de carreras para una temporada específica.
+    Esto es necesario para asignar RaceNumber correctamente.
+    Basado en calendarios reales de F1.
     """
-    # Orden de carreras por temporada (basado en calendarios F1 históricos)
-    season_calendars = {
+    calendars = {
         2012: [
             'Australian', 'Malaysian', 'Chinese', 'Bahrain', 'Spanish',
             'Monaco', 'Canadian', 'European', 'British', 'German',
@@ -92,17 +101,17 @@ def create_season_race_order(season):
         ]
     }
     
-    return season_calendars.get(season, [])
+    return calendars.get(season, [])
 
-def normalize_race_name(filename):
+def find_race_number(season, race_filename, calendar):
     """
-    Normaliza el nombre del archivo para que coincida con los nombres del calendario.
+    Encuentra el número de carrera (RaceNumber) basado en el calendario.
     """
-    # Eliminar extensión y normalizar
-    name = Path(filename).stem
+    # Normalizar nombre de archivo
+    race_name = Path(race_filename).stem
     
-    # Manejar casos especiales
-    special_cases = {
+    # Casos especiales
+    special_names = {
         '70th_Anniversary_Grand_Prix': '70th_Anniversary',
         'Mexico_City_Grand_Prix': 'Mexico_City',
         'São_Paulo_Grand_Prix': 'São_Paulo',
@@ -113,312 +122,311 @@ def normalize_race_name(filename):
         'Eifel_Grand_Prix': 'Eifel',
         'Emilia-Romagna_Grand_Prix': 'Emilia-Romagna',
         'Dutch_Grand_Prix': 'Dutch',
-        '70th_Anniversary_Grand_Prix': '70th_Anniversary',
         'Sakhir_Grand_Prix': 'Sakhir'
     }
     
     # Verificar casos especiales primero
-    for special_name, normalized in special_cases.items():
-        if special_name in name:
-            return normalized
+    for special, normalized in special_names.items():
+        if special in race_name:
+            race_key = normalized
+            break
+    else:
+        # Extraer nombre base (sin _Grand_Prix)
+        race_key = race_name.replace('_Grand_Prix', '')
     
-    # Patrón general: Extraer el nombre principal antes de "_Grand_Prix"
-    match = re.match(r'(.+)_Grand_Prix', name)
-    if match:
-        return match.group(1)
-    
-    return name
-
-def find_race_number(season, race_name, race_order):
-    """
-    Encuentra el número de carrera (round) basado en el orden de la temporada.
-    """
-    normalized_name = normalize_race_name(race_name)
-    
-    # Buscar en el orden de carreras
-    for i, race in enumerate(race_order, 1):
-        if race.lower() in normalized_name.lower() or normalized_name.lower() in race.lower():
+    # Buscar en el calendario
+    for i, calendar_race in enumerate(calendar, 1):
+        if calendar_race.lower() in race_key.lower() or race_key.lower() in calendar_race.lower():
             return i
     
-    # Si no se encuentra, intentar con aproximaciones
-    for i, race in enumerate(race_order, 1):
-        # Eliminar guiones y underscores para comparación
-        race_simple = race.replace('-', '').replace('_', '').lower()
-        name_simple = normalized_name.replace('-', '').replace('_', '').lower()
-        
-        if race_simple in name_simple or name_simple in race_simple:
-            return i
-    
-    print(f"    No se pudo encontrar round para: {race_name} (normalizado: {normalized_name})")
+    # Si no se encuentra, devolver None
     return None
 
-def merge_race_data(season, results_dir="data", pitstops_dir="data/pitstops"):
+def get_driver_number_column(df):
     """
-    Fusiona los datos de resultados y pitstops para una temporada específica.
+    Encuentra la columna que contiene el número de piloto.
     """
-    # Obtener orden de carreras para esta temporada
-    race_order = create_season_race_order(season)
+    possible_cols = ['No', 'No.', 'Number', 'Driver Number', 'Num', 'Car number']
     
-    if not race_order:
-        print(f"  No hay calendario definido para la temporada {season}")
-        return pd.DataFrame()
+    for col in possible_cols:
+        if col in df.columns:
+            return col
     
-    # Lista para almacenar todos los DataFrames fusionados
-    all_merged_dfs = []
+    return None
+
+def create_driver_mapping():
+    """
+    Crea un mapeo para resolver inconsistencias en números de piloto.
+    """
+    return {
+        # Mapeo por driverId
+        'max_verstappen': '33',
+        'lewis_hamilton': '44',
+        'valtteri_bottas': '77',
+        'carlos_sainz': '55',
+        'charles_leclerc': '16',
+        'lando_norris': '4',
+        'george_russell': '63',
+        'fernando_alonso': '14',
+        'esteban_ocon': '31',
+        'pierre_gasly': '10',
+        'yuki_tsunoda': '22',
+        'daniel_ricciardo': '3',
+        'kevin_magnussen': '20',
+        'mick_schumacher': '47',
+        'sebastian_vettel': '5',
+        'lance_stroll': '18',
+        'nicholas_latifi': '6',
+        'alexander_albon': '23',
+        'sergio_perez': '11',
+        'kimi_raikkonen': '7',
+        'antonio_giovinazzi': '99',
+        'nyck_de_vries': '21',
+        'logan_sargeant': '2',
+        'nico_hulkenberg': '27',
+        'guanyu_zhou': '24',
+        'oscar_piastri': '81',
+    }
+
+def merge_race_data(season, race_number, race_filename, calendar):
+    """
+    Fusiona datos de una carrera específica.
+    """
+    # Cargar resultados
+    results_path = f"data/{season}/{race_filename}"
     
-    # Directorio de resultados para esta temporada
-    results_season_dir = os.path.join(results_dir, str(season))
+    if not os.path.exists(results_path):
+        return None
     
-    if not os.path.exists(results_season_dir):
-        print(f"⚠️  No existe directorio de resultados para {season}")
-        return pd.DataFrame()
+    results_df = pd.read_csv(results_path)
     
-    # Obtener todos los archivos CSV de resultados
-    result_files = sorted(glob.glob(os.path.join(results_season_dir, "*.csv")))
+    if results_df.empty:
+        return None
     
-    print(f"🔍 Procesando temporada {season} ({len(result_files)} carreras encontradas)")
+    # Añadir columnas requeridas
+    results_df = results_df.copy()
+    results_df['Season'] = season
+    results_df['RaceNumber'] = race_number
+    results_df['RaceName'] = race_filename.replace('.csv', '')
     
-    for result_file in result_files:
-        # Extraer nombre de la carrera del archivo
-        race_filename = os.path.basename(result_file)
+    # Buscar columna de número de piloto
+    driver_num_col = get_driver_number_column(results_df)
+    
+    # Inicializar columnas de pitstops
+    pitstop_cols = ['DriverId', 'DriverNumber', 'NPitstops', 'MedianPitStopDuration']
+    for col in pitstop_cols:
+        results_df[col] = pd.NA
+    
+    # Cargar datos de pitstops si existen (solo para 2019-2024)
+    if season >= 2019:
+        pitstop_path = f"data/pitstops/{season}/{season}_round{race_number:02d}_pitstops.csv"
         
-        # Determinar round number
-        round_num = find_race_number(season, race_filename, race_order)
-        
-        if round_num is None:
-            print(f"  ⏭️  Saltando {race_filename} - no se pudo determinar round")
-            continue
-        
-        # Cargar datos de resultados
-        try:
-            results_df = pd.read_csv(result_file)
+        if os.path.exists(pitstop_path):
+            pitstops_df = pd.read_csv(pitstop_path)
             
-            if results_df.empty:
-                print(f"  ⚠️  Archivo vacío: {race_filename}")
-                continue
+            if not pitstops_df.empty and driver_num_col:
+                # Aplicar mapeo de corrección si es necesario
+                driver_mapping = create_driver_mapping()
                 
-            # Añadir columnas de identificación
-            results_df['Season'] = season
-            results_df['RaceNumber'] = round_num
-            results_df['RaceName'] = race_filename.replace('.csv', '')
-            
-            # Verificar columnas existentes
-            print(f"  📊 {race_filename}: {len(results_df)} filas, {len(results_df.columns)} columnas")
-            
-        except Exception as e:
-            print(f"  ❌ Error cargando {race_filename}: {e}")
+                # Crear columna con número corregido
+                pitstops_df['CorrectedNumber'] = pitstops_df['DriverId'].map(
+                    lambda x: driver_mapping.get(x, str(pitstops_df.loc[pitstops_df['DriverId'] == x, 'DriverNumber'].iloc[0]))
+                    if x in pitstops_df['DriverId'].values else pd.NA
+                )
+                
+                # Convertir a string para comparación
+                results_df[driver_num_col] = results_df[driver_num_col].astype(str)
+                pitstops_df['CorrectedNumber'] = pitstops_df['CorrectedNumber'].astype(str)
+                
+                # Realizar merge
+                merged_df = pd.merge(
+                    results_df,
+                    pitstops_df[['CorrectedNumber', 'DriverId', 'NPitstops', 'MedianPitStopDuration']],
+                    left_on=driver_num_col,
+                    right_on='CorrectedNumber',
+                    how='left'
+                )
+                
+                # Eliminar columna temporal
+                merged_df = merged_df.drop(columns=['CorrectedNumber'], errors='ignore')
+                
+                return merged_df
+    
+    return results_df
+
+def merge_all_data():
+    """
+    Función principal que fusiona todos los datos.
+    """
+    print("="*70)
+    print("PARTE 3: CRUZADO DE DATOS DE RESULTADOS Y PITSTOPS")
+    print("="*70)
+    
+    all_merged = []
+    
+    # Procesar cada temporada
+    for season in range(2012, 2025):
+        print(f"\n Procesando temporada {season}...")
+        
+        # Obtener calendario
+        calendar = get_season_calendar(season)
+        if not calendar:
+            print(f"    No hay calendario definido para {season}")
             continue
         
-        # Columnas base para pitstops (todas como NaN inicialmente)
-        pitstop_columns = ['DriverId', 'DriverNumber', 'NPitstops', 'MedianPitStopDuration']
+        # Buscar archivos de resultados
+        results_dir = f"data/{season}"
+        if not os.path.exists(results_dir):
+            print(f"    No hay datos de resultados para {season}")
+            continue
         
-        # Verificar si tenemos datos de pitstops para esta temporada
+        result_files = sorted(glob.glob(os.path.join(results_dir, "*.csv")))
+        print(f"   {len(result_files)} carreras encontradas")
+        
+        # Procesar cada carrera
+        for race_file in result_files:
+            race_filename = os.path.basename(race_file)
+            
+            # Determinar número de carrera
+            race_number = find_race_number(season, race_filename, calendar)
+            
+            if race_number is None:
+                print(f"    No se pudo determinar RaceNumber para: {race_filename}")
+                continue
+            
+            # Fusionar datos
+            merged_df = merge_race_data(season, race_number, race_filename, calendar)
+            
+            if merged_df is not None:
+                all_merged.append(merged_df)
+                print(f"     {race_filename}: {len(merged_df)} filas")
+    
+    # Combinar todos los DataFrames
+    if not all_merged:
+        print("\n No se pudieron fusionar datos")
+        return None
+    
+    print(f"\n{'='*70}")
+    print("COMBINANDO DATOS DE TODAS LAS TEMPORADAS...")
+    
+    final_df = pd.concat(all_merged, ignore_index=True)
+    
+    # Reordenar columnas: Season y RaceNumber primero
+    col_order = ['Season', 'RaceNumber', 'RaceName']
+    remaining_cols = [col for col in final_df.columns if col not in col_order]
+    final_df = final_df[col_order + remaining_cols]
+    
+    # Exportar a CSV
+    os.makedirs("merged_data", exist_ok=True)
+    output_file = "merged_data/f1_complete_dataset.csv"
+    final_df.to_csv(output_file, index=False)
+    
+    # Crear metadatos
+    create_metadata(final_df, output_file)
+    
+    # Mostrar estadísticas
+    print_stats(final_df, output_file)
+    
+    return final_df
+
+def create_metadata(df, output_path):
+    """Crea archivo de metadatos."""
+    metadata = {
+        "dataset": "Formula 1 Complete Dataset 2012-2024",
+        "description": "Dataset fusionado de resultados de carreras y pitstops",
+        "total_rows": len(df),
+        "total_columns": len(df.columns),
+        "season_range": f"{int(df['Season'].min())}-{int(df['Season'].max())}",
+        "unique_seasons": sorted([int(s) for s in df['Season'].unique()]),
+        "unique_races": int(df['RaceName'].nunique()),
+        "columns": list(df.columns),
+        "pitstops_available_from": 2019,
+        "generated_date": pd.Timestamp.now().isoformat()
+    }
+    
+    metadata_file = output_path.replace('.csv', '_metadata.json')
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    print(f"   Metadatos guardados en: {metadata_file}")
+
+def print_stats(df, output_path):
+    """Muestra estadísticas del dataset."""
+    print(f"\n DATASET FINAL CREADO:")
+    print(f"    Archivo: {output_path}")
+    print(f"    Total filas: {len(df):,}")
+    print(f"    Total columnas: {len(df.columns)}")
+    
+    print(f"\n DISTRIBUCIÓN POR TEMPORADA:")
+    season_counts = df['Season'].value_counts().sort_index()
+    for season, count in season_counts.items():
         if season >= 2019:
-            # Para 2019-2024: cargar datos reales de pitstops
-            pitstop_file = os.path.join(pitstops_dir, str(season), f"{season}_round{round_num:02d}_pitstops.csv")
-            
-            if os.path.exists(pitstop_file):
-                try:
-                    pitstops_df = pd.read_csv(pitstop_file)
-                    
-                    # Asegurar que tenga las columnas necesarias
-                    for col in pitstop_columns:
-                        if col not in pitstops_df.columns:
-                            pitstops_df[col] = pd.NA
-                    
-                    print(f"    ✅ Pitstops encontrados: {len(pitstops_df)} registros")
-                    
-                except Exception as e:
-                    print(f"    ❌ Error cargando pitstops: {e}")
-                    pitstops_df = pd.DataFrame(columns=pitstop_columns)
-            else:
-                print(f"    ⚠️  No hay archivo de pitstops para round {round_num}")
-                pitstops_df = pd.DataFrame(columns=pitstop_columns)
+            pitstops_count = df[df['Season'] == season]['NPitstops'].notna().sum()
+            print(f"   {int(season)}: {count:>4} filas | Pitstops: {pitstops_count:>4} ({pitstops_count/count*100:>5.1f}%)")
         else:
-            # Para 2012-2018: no hay datos de pitstops, crear DataFrame vacío
-            print(f"    📝 Sin datos de pitstops (año {season} < 2019)")
-            pitstops_df = pd.DataFrame(columns=pitstop_columns)
-        
-        # Encontrar columna de número de piloto en resultados
-        driver_number_col = None
-        possible_cols = ['No', 'Driver Number', 'Number', 'Car number', 'Num', 'Car', 'Driver']
-        
-        for col in possible_cols:
-            if col in results_df.columns:
-                driver_number_col = col
-                break
-        
-        if driver_number_col is None:
-            print(f"  ⚠️  No se encontró columna de número de piloto en {race_filename}")
-            # Listar columnas disponibles para depuración
-            print(f"    Columnas disponibles: {list(results_df.columns)}")
-            
-            # Crear columna temporal si no existe
-            results_df['Temp_Driver_Number'] = range(1, len(results_df) + 1)
-            driver_number_col = 'Temp_Driver_Number'
-        
-        # Convertir a string para facilitar el merge
-        results_df[driver_number_col] = results_df[driver_number_col].astype(str)
-        
-        if not pitstops_df.empty and 'DriverNumber' in pitstops_df.columns:
-            pitstops_df['DriverNumber'] = pitstops_df['DriverNumber'].astype(str)
-            
-            # Realizar el merge
-            merged_df = pd.merge(
-                results_df,
-                pitstops_df,
-                left_on=driver_number_col,
-                right_on='DriverNumber',
-                how='left'  # LEFT JOIN: mantener todos los resultados
-            )
-        else:
-            # Si no hay pitstops, añadir columnas vacías
-            merged_df = results_df.copy()
-            for col in pitstop_columns:
-                if col not in merged_df.columns:
-                    merged_df[col] = pd.NA
-        
-        # Limpiar columnas temporales
-        if 'Temp_Driver_Number' in merged_df.columns:
-            merged_df = merged_df.drop(columns=['Temp_Driver_Number'])
-        
-        all_merged_dfs.append(merged_df)
+            print(f"   {int(season)}: {count:>4} filas | Sin datos de pitstops")
     
-    if all_merged_dfs:
-        final_df = pd.concat(all_merged_dfs, ignore_index=True)
-        print(f"  ✅ Temporada {season}: {len(final_df)} filas fusionadas")
-        return final_df
-    else:
-        print(f"  ⚠️  Temporada {season}: No se pudieron fusionar datos")
-        return pd.DataFrame()
-
-def merge_all_seasons(start_year=2012, end_year=2024):
-    """
-    Fusiona datos de todas las temporadas desde start_year hasta end_year.
-    """
-    all_seasons_data = []
-    
-    print("=" * 60)
-    print(" INICIANDO FUSIÓN DE DATOS F1")
-    print(f" Rango: {start_year} - {end_year}")
-    print("=" * 60)
-    
-    for year in range(start_year, end_year + 1):
-        season_data = merge_race_data(year)
-        
-        if not season_data.empty:
-            all_seasons_data.append(season_data)
-        else:
-            print(f"  Saltando temporada {year} - sin datos")
-    
-    if all_seasons_data:
-        # Combinar todos los DataFrames
-        final_df = pd.concat(all_seasons_data, ignore_index=True)
-        
-        # Reordenar columnas para mejor presentación
-        column_order = ['Season', 'RaceNumber', 'RaceName'] + \
-                      [col for col in final_df.columns if col not in ['Season', 'RaceNumber', 'RaceName']]
-        final_df = final_df[column_order]
-        
-        # Crear directorio para datos fusionados
-        os.makedirs("merged_data", exist_ok=True)
-        
-        # Guardar el DataFrame completo
-        output_file = f"merged_data/f1_merged_{start_year}_{end_year}.csv"
-        final_df.to_csv(output_file, index=False)
-        
-        # También guardar por separado por si acaso
-        for year in range(start_year, end_year + 1):
-            year_data = final_df[final_df['Season'] == year]
-            if not year_data.empty:
-                year_data.to_csv(f"merged_data/f1_{year}.csv", index=False)
-        
-        print("\n" + "=" * 60)
-        print(" FUSIÓN COMPLETADA")
-        print("=" * 60)
-        
-        # Mostrar estadísticas
-        print(f"\n ESTADÍSTICAS DEL DATASET FUSIONADO:")
-        print(f"   Total de filas: {len(final_df):,}")
-        print(f"   Total de columnas: {len(final_df.columns)}")
-        print(f"   Temporadas incluidas: {sorted(final_df['Season'].unique())}")
-        
-        # Contar datos de pitstops
-        has_pitstops = final_df['NPitstops'].notna().sum()
-        print(f"   Filas con datos de pitstops: {has_pitstops:,} ({has_pitstops/len(final_df)*100:.1f}%)")
-        
-        # Distribución por año
-        print(f"\n DISTRIBUCIÓN POR AÑO:")
-        year_counts = final_df['Season'].value_counts().sort_index()
-        for year, count in year_counts.items():
-            pitstops_count = final_df[final_df['Season'] == year]['NPitstops'].notna().sum()
-            print(f"   {year}: {count:>4} filas | Pitstops: {pitstops_count:>4} ({pitstops_count/count*100:>5.1f}%)")
-        
-        print(f"\n Archivo guardado en: {output_file}")
-        print(f"   Tamaño aproximado: {os.path.getsize(output_file) / 1024 / 1024:.2f} MB")
-        
-        return final_df
-    else:
-        print(" No se pudieron fusionar datos para ninguna temporada")
-        return pd.DataFrame()
-
-def generate_report():
-    """
-    Genera un reporte de los datos fusionados.
-    """
-    merged_file = "merged_data/f1_merged_2012_2024.csv"
-    
-    if os.path.exists(merged_file):
-        df = pd.read_csv(merged_file)
-        
-        print("\n REPORTE DE DATOS FUSIONADOS")
-        print("=" * 50)
-        
-        print("\n1. ESTRUCTURA DEL DATASET:")
-        print(f"   • Filas totales: {len(df)}")
-        print(f"   • Columnas totales: {len(df.columns)}")
-        
-        print("\n2. COLUMNAS DISPONIBLES:")
-        for i, col in enumerate(df.columns, 1):
+    print(f"\n COLUMNAS DE PITSTOPS:")
+    pitstop_cols = ['DriverId', 'DriverNumber', 'NPitstops', 'MedianPitStopDuration']
+    for col in pitstop_cols:
+        if col in df.columns:
             non_null = df[col].notna().sum()
-            null_pct = (1 - non_null/len(df)) * 100
-            print(f"   {i:2}. {col:<25} ({non_null:>5} no nulos, {null_pct:>5.1f}% nulos)")
-        
-        print("\n3. RESUMEN POR COLUMNA:")
-        for col in ['NPitstops', 'MedianPitStopDuration']:
-            if col in df.columns:
-                print(f"\n   {col}:")
-                print(f"      • Valores no nulos: {df[col].notna().sum()}")
-                print(f"      • Promedio: {df[col].mean():.2f}")
-                print(f"      • Mínimo: {df[col].min():.2f}")
-                print(f"      • Máximo: {df[col].max():.2f}")
-        
-        # Guardar reporte
-        with open("merged_data/report.txt", "w") as f:
-            f.write("REPORTE DE DATOS FUSIONADOS F1\n")
-            f.write("="*50 + "\n\n")
-            f.write(f"Total filas: {len(df)}\n")
-            f.write(f"Total columnas: {len(df.columns)}\n\n")
-            f.write("Columnas disponibles:\n")
-            for col in df.columns:
-                f.write(f"  - {col}\n")
-        
-        print(f"\n Reporte guardado en: merged_data/report.txt")
+            print(f"   {col}: {non_null:>6} no nulos ({non_null/len(df)*100:>5.1f}%)")
+
+def validate_requirements(df):
+    """Valida que se cumplan los requisitos del punto 3."""
+    print(f"\n{'='*70}")
+    print("VALIDACIÓN DE REQUISITOS (Punto 3)")
+    print(f"{'='*70}")
+    
+    requirements = [
+        ("1. DataFrame único creado", df is not None),
+        ("2. Columnas Season y RaceNumber presentes", 
+         all(col in df.columns for col in ['Season', 'RaceNumber'])),
+        ("3. Season no contiene valores nulos", df['Season'].notna().all()),
+        ("4. RaceNumber no contiene valores nulos", df['RaceNumber'].notna().all()),
+        ("5. Contiene columnas de resultados", any(col in df.columns for col in ['Driver', 'Constructor', 'Laps'])),
+        ("6. Contiene columnas de pitstops", all(col in df.columns for col in ['DriverId', 'DriverNumber', 'NPitstops', 'MedianPitStopDuration'])),
+        ("7. Exportado a CSV", os.path.exists("merged_data/f1_complete_dataset.csv")),
+    ]
+    
+    all_passed = True
+    for req_name, condition in requirements:
+        status = "OK" if condition else "ERROR"
+        print(f"  {status} {req_name}")
+        if not condition:
+            all_passed = False
+    
+    return all_passed
 
 if __name__ == "__main__":
-    # Fusionar datos de 2012 a 2024
-    merged_data = merge_all_seasons(2012, 2024)
+    # Ejecutar la fusión
+    dataset = merge_all_data()
     
-    if not merged_data.empty:
-        # Generar reporte
-        generate_report()
+    if dataset is not None:
+        # Validar requisitos
+        requirements_met = validate_requirements(dataset)
         
-        # Mostrar primeras filas como ejemplo
-        print("\n EJEMPLO DE DATOS (primeras 5 filas):")
-        print(merged_data.head())
+        # Mostrar ejemplo
+        print(f"\n{'='*70}")
+        print("EJEMPLO DEL DATASET (primeras 5 filas):")
+        print(f"{'='*70}")
         
-        print("\n COLUMNAS DE PITSTOPS (ejemplo):")
-        pitstop_cols = ['DriverId', 'DriverNumber', 'NPitstops', 'MedianPitStopDuration']
-        if all(col in merged_data.columns for col in pitstop_cols):
-            sample = merged_data[['Season', 'RaceName'] + pitstop_cols].head(10)
-            print(sample.to_string())
+        # Seleccionar columnas representativas
+        sample_cols = ['Season', 'RaceNumber', 'RaceName', 'Driver', 'Constructor', 
+                      'NPitstops', 'MedianPitStopDuration']
+        available_cols = [col for col in sample_cols if col in dataset.columns]
+        
+        if available_cols:
+            print(dataset[available_cols].head().to_string())
+        
+        
+        if requirements_met:
+            print(" Todos los requisitos del punto 3 cumplidos")
+        else:
+            print("  Algunos requisitos no se cumplen completamente")
+        
+        print(f"\n El dataset está listo para el análisis de la Parte 4")
+        print(f" Ubicación: merged_data/f1_complete_dataset.csv")
+    else:
+        print("\n Error: No se pudo crear el dataset")
